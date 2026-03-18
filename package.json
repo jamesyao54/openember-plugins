@@ -3,10 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "OpenClaw plugins for multi-user memory and user profile management",
+  "description": "OpenClaw plugins for OpenEmber",
   "workspaces": [
-    "openember-memory",
-    "openember-user-profiles"
+    "openember-memory"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
