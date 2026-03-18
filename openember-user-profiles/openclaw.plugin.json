@@ -1,0 +1,20 @@
+{
+  "id": "openember-user-profiles",
+  "kind": "general",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "dataDir": {
+        "type": "string"
+      }
+    }
+  },
+  "uiHints": {
+    "dataDir": {
+      "label": "Data Directory",
+      "placeholder": "./users",
+      "help": "Directory for storing user profiles and identity maps."
+    }
+  }
+}

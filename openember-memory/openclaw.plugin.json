@@ -1,0 +1,215 @@
+{
+  "id": "openember-memory",
+  "kind": "memory",
+  "uiHints": {
+    "baseUrl": {
+      "label": "OpenViking Base URL",
+      "placeholder": "http://127.0.0.1:1933",
+      "help": "OpenViking HTTP endpoint."
+    },
+    "apiKey": {
+      "label": "API Key",
+      "sensitive": true,
+      "help": "Optional API key when OpenViking auth is enabled."
+    },
+    "uriBase": {
+      "label": "URI Base",
+      "advanced": true,
+      "placeholder": "viking://resources/openclaw/{agentId}",
+      "help": "Resource root URI. Supports the {agentId} placeholder."
+    },
+    "tieredLoading": {
+      "label": "Tiered Loading",
+      "advanced": true,
+      "help": "When true, memory_get uses overview first (for whole-file reads) and falls back to full read."
+    },
+    "sync.interval": {
+      "label": "Sync Interval",
+      "advanced": true,
+      "placeholder": "5m",
+      "help": "Automatic sync interval. Supported units: s, m, h, d (e.g. 30s, 5m, 1h)."
+    },
+    "sync.onBoot": {
+      "label": "Sync On Boot",
+      "advanced": true,
+      "help": "Run one sync after plugin startup."
+    },
+    "sync.extraPaths": {
+      "label": "Extra Paths",
+      "advanced": true,
+      "help": "Additional files/directories to sync. Paths are workspace-relative; directories are scanned recursively for .md files."
+    },
+    "sync.waitForProcessing": {
+      "label": "Wait For Processing",
+      "advanced": true,
+      "help": "Wait until OpenViking processing queues finish after sync."
+    },
+    "sync.waitTimeoutSec": {
+      "label": "Wait Timeout (sec)",
+      "advanced": true,
+      "help": "Timeout in seconds for waitForProcessing."
+    },
+    "search.mode": {
+      "label": "Search Mode",
+      "advanced": true,
+      "help": "find: stateless retrieval (default). search: session-aware retrieval when session context is available."
+    },
+    "search.defaultLimit": {
+      "label": "Default Limit",
+      "advanced": true,
+      "help": "Default max result count if memory_search.maxResults is not provided."
+    },
+    "search.scoreThreshold": {
+      "label": "Score Threshold",
+      "advanced": true,
+      "help": "Minimum similarity score in [0, 1]."
+    },
+    "search.targetUri": {
+      "label": "Target URI",
+      "advanced": true,
+      "help": "Restrict search to a specific URI subtree."
+    },
+    "server.enabled": {
+      "label": "Auto-start OpenViking",
+      "advanced": true,
+      "help": "If true, the plugin starts/stops an OpenViking process automatically."
+    },
+    "server.venvPath": {
+      "label": "OpenViking Venv Path",
+      "advanced": true,
+      "placeholder": "/path/to/venv",
+      "help": "Required when server.enabled=true. Points to the Python virtual environment root."
+    },
+    "server.dataDir": {
+      "label": "OpenViking Data Dir",
+      "advanced": true,
+      "help": "Optional data directory passed to openviking serve --data-dir."
+    },
+    "server.host": {
+      "label": "OpenViking Host",
+      "advanced": true,
+      "help": "Host for auto-started OpenViking server. Defaults to 127.0.0.1."
+    },
+    "server.port": {
+      "label": "OpenViking Port",
+      "advanced": true,
+      "help": "Port for auto-started OpenViking server. Defaults to 1933."
+    },
+    "server.startupTimeoutMs": {
+      "label": "Startup Timeout (ms)",
+      "advanced": true,
+      "help": "Max wait time for OpenViking health check during startup."
+    },
+    "server.env": {
+      "label": "Server Env",
+      "advanced": true,
+      "help": "Extra environment variables for the auto-started OpenViking process."
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["baseUrl"],
+    "properties": {
+      "baseUrl": {
+        "type": "string"
+      },
+      "apiKey": {
+        "type": "string"
+      },
+      "uriBase": {
+        "type": "string"
+      },
+      "tieredLoading": {
+        "type": "boolean"
+      },
+      "mappings": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "sync": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "interval": {
+            "type": "string"
+          },
+          "onBoot": {
+            "type": "boolean"
+          },
+          "extraPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "waitForProcessing": {
+            "type": "boolean"
+          },
+          "waitTimeoutSec": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      },
+      "search": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["find", "search"]
+          },
+          "defaultLimit": {
+            "type": "number",
+            "minimum": 1
+          },
+          "scoreThreshold": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "targetUri": {
+            "type": "string"
+          }
+        }
+      },
+      "server": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["enabled", "venvPath"],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "venvPath": {
+            "type": "string"
+          },
+          "dataDir": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "port": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "startupTimeoutMs": {
+            "type": "number",
+            "minimum": 1000
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}
