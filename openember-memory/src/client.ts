@@ -42,16 +42,25 @@ const MEMORY_URI_PATTERNS = [
   /^viking:\/\/agent\/(?:[^/]+\/)?memories(?:\/|$)/,
 ];
 
-export function md5Short(input: string): string {
-  return createHash("md5").update(input).digest("hex").slice(0, 12);
+/**
+ * Sanitize userId for X-OpenViking-User header.
+ * OpenViking requires alphanumeric user_id ([a-zA-Z0-9_-]), so replace colons with underscores.
+ */
+export function sanitizeUserId(userId: string): string {
+  return userId.replace(/:/g, "_");
+}
+
+/**
+ * Compute the agent space name matching OpenViking v0.2.6 server logic:
+ *   agent_space = md5(user_id + agent_id)[:12]    (no separator)
+ */
+export function agentSpaceName(userId: string, agentId: string): string {
+  return createHash("md5").update(sanitizeUserId(userId) + agentId).digest("hex").slice(0, 12);
 }
 
 export function isMemoryUri(uri: string): boolean {
   return MEMORY_URI_PATTERNS.some((pattern) => pattern.test(uri));
 }
-
-/** Matches viking://user/ followed by a known structure dir (memories, skills, etc.) */
-const USER_STRUCTURE_URI_RE = /^viking:\/\/user\/(memories|skills|instructions|workspaces)(\/|$)/;
 
 export class OpenVikingClient {
   /**
@@ -69,8 +78,7 @@ export class OpenVikingClient {
 
   /**
    * Set the current user ID for multi-user memory routing.
-   * - userId set: viking://user/memories → viking://user/{md5(userId:agentId)}/memories
-   * - userId null: URIs pass through without space prefix
+   * Sent as X-OpenViking-User header; server uses it to derive user_space and agent_space.
    */
   setUserId(userId: string | null): void {
     this.userId = userId;
@@ -97,10 +105,10 @@ export class OpenVikingClient {
         headers.set("X-OpenViking-Agent", this.agentId);
       }
       if (this.userId) {
-        // Encode userId+agentId into X-OpenViking-User for per-user-per-agent isolation.
-        // Uses md5 hash to avoid special character issues (OpenViking requires alphanumeric).
-        // e.g. userId="1112318905768231003", agentId="ember" → md5("1112318905768231003:ember")[:12]
-        headers.set("X-OpenViking-User", md5Short(`${this.userId}:${this.agentId}`));
+        // Pass userId directly. Server derives:
+        //   user_space = userId (for viking://user/ routing)
+        //   agent_space = md5(userId:agentId) (for viking://agent/ routing)
+        headers.set("X-OpenViking-User", sanitizeUserId(this.userId));
       }
       if (init.body && !headers.has("Content-Type")) {
         headers.set("Content-Type", "application/json");
@@ -134,33 +142,6 @@ export class OpenVikingClient {
     await this.request<{ status: string }>("/health");
   }
 
-  /**
-   * Normalize a target URI with multi-user routing.
-   *
-   * With userId set:
-   *   viking://user/memories  → viking://user/{md5(userId:agentId)}/memories
-   *   viking://agent/memories → unchanged (agent shared, no user prefix)
-   *
-   * Without userId (null):
-   *   All URIs pass through unchanged.
-   */
-  normalizeTargetUri(targetUri: string): string {
-    const trimmed = targetUri.trim().replace(/\/+$/, "");
-    if (!this.userId) {
-      return trimmed;
-    }
-
-    const match = trimmed.match(USER_STRUCTURE_URI_RE);
-    if (!match) {
-      return trimmed;
-    }
-
-    // viking://user/{md5(userId:agentId)}/memories — matches X-OpenViking-User header
-    const space = md5Short(`${this.userId}:${this.agentId}`);
-    const rest = trimmed.slice("viking://user/".length);
-    return `viking://user/${space}/${rest}`;
-  }
-
   async find(
     query: string,
     options: {
@@ -169,16 +150,14 @@ export class OpenVikingClient {
       scoreThreshold?: number;
     },
   ): Promise<FindResult> {
-    const normalizedTargetUri = this.normalizeTargetUri(options.targetUri);
-    const body = {
-      query,
-      target_uri: normalizedTargetUri,
-      limit: options.limit,
-      score_threshold: options.scoreThreshold,
-    };
     return this.request<FindResult>("/api/v1/search/find", {
       method: "POST",
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        query,
+        target_uri: options.targetUri,
+        limit: options.limit,
+        score_threshold: options.scoreThreshold,
+      }),
     });
   }
 
