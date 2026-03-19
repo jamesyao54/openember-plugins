@@ -5,7 +5,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { Type } from "@sinclair/typebox";
 import { memoryOpenVikingConfigSchema } from "./config.js";
 
-import { OpenVikingClient, localClientCache, localClientPendingPromises, isMemoryUri } from "./client.js";
+import { OpenVikingClient, localClientCache, localClientPendingPromises, isMemoryUri, sanitizeUserId, agentSpaceName } from "./client.js";
 import type { PendingClientEntry, FindResultItem } from "./client.js";
 import {
   getCaptureDecision,
@@ -109,56 +109,50 @@ const memoryPlugin = {
     };
 
     /**
-     * Parallel multi-scope search.
+     * Parallel two-scope search with client-computed URIs.
      *
-     * With userId: 2-way parallel search via X-OpenViking-User header:
-     *   1. viking://user/memories (routed to user's space by normalizeTargetUri)
-     *   2. viking://agent/memories (agent shared, no user header)
+     * With userId:
+     *   1. viking://user/{sanitizedUserId}/memories — profile, preferences, entities, events
+     *   2. viking://agent/{md5(userId+agentId)[:12]}/memories — cases, patterns
      *
-     * Without userId: agent shared only.
+     * Without userId: searches default spaces only.
      */
-    const multiScopeSearch = async (
+    const searchMemories = async (
       queryText: string,
       userId: string | null,
       agentId: string,
       candidateLimit: number,
     ): Promise<FindResultItem[]> => {
+      const client = createConfiguredClient(userId, agentId);
       const findOpts = { limit: candidateLimit, scoreThreshold: 0 };
 
-      if (userId) {
-        const userClient = createConfiguredClient(userId, agentId);
-        const sharedClient = createConfiguredClient(null, agentId);
+      const userUri = userId
+        ? `viking://user/${sanitizeUserId(userId)}/memories`
+        : "viking://user/memories";
+      const agentUri = userId
+        ? `viking://agent/${agentSpaceName(userId, agentId)}/memories`
+        : "viking://agent/memories";
 
-        const [userSettled, sharedSettled] = await Promise.allSettled([
-          // User-specific memories (X-OpenViking-User + normalizeTargetUri adds peerId)
-          userClient.find(queryText, { targetUri: "viking://user/memories", ...findOpts }),
-          // Agent shared memories (no user header)
-          sharedClient.find(queryText, { targetUri: "viking://agent/memories", ...findOpts }),
-        ]);
+      const [userSettled, agentSettled] = await Promise.allSettled([
+        client.find(queryText, { targetUri: userUri, ...findOpts }),
+        client.find(queryText, { targetUri: agentUri, ...findOpts }),
+      ]);
 
-        const userResult = userSettled.status === "fulfilled" ? userSettled.value : { memories: [] };
-        const sharedResult = sharedSettled.status === "fulfilled" ? sharedSettled.value : { memories: [] };
+      const userResult = userSettled.status === "fulfilled" ? userSettled.value : { memories: [] };
+      const agentResult = agentSettled.status === "fulfilled" ? agentSettled.value : { memories: [] };
 
-        if (userSettled.status === "rejected") {
-          api.logger.warn(`openember-memory: user memories search failed: ${String(userSettled.reason)}`);
-        }
-        if (sharedSettled.status === "rejected") {
-          api.logger.warn(`openember-memory: agent shared memories search failed: ${String(sharedSettled.reason)}`);
-        }
-
-        const allMemories = [...(userResult.memories ?? []), ...(sharedResult.memories ?? [])];
-        const uniqueMemories = allMemories.filter((memory, index, self) =>
-          index === self.findIndex((m) => m.uri === memory.uri)
-        );
-        return uniqueMemories.filter((m) => m.level === 2);
-      } else {
-        const client = createConfiguredClient(null, agentId);
-        const result = await client.find(queryText, {
-          targetUri: "viking://agent/memories",
-          ...findOpts,
-        });
-        return (result.memories ?? []).filter((m) => m.level === 2);
+      if (userSettled.status === "rejected") {
+        api.logger.warn(`openember-memory: user memories search failed: ${String(userSettled.reason)}`);
       }
+      if (agentSettled.status === "rejected") {
+        api.logger.warn(`openember-memory: agent memories search failed: ${String(agentSettled.reason)}`);
+      }
+
+      const allMemories = [...(userResult.memories ?? []), ...(agentResult.memories ?? [])];
+      const uniqueMemories = allMemories.filter((memory, index, self) =>
+        index === self.findIndex((m) => m.uri === memory.uri)
+      );
+      return uniqueMemories.filter((m) => m.level === 2);
     };
 
     // ─── Tools (registered as factory for per-request user context) ───
@@ -213,7 +207,7 @@ const memoryPlugin = {
             });
             leafMemories = (result.memories ?? []).filter((m) => m.level === 2);
           } else {
-            leafMemories = await multiScopeSearch(query, userId, agentId, requestLimit);
+            leafMemories = await searchMemories(query, userId, agentId, requestLimit);
           }
 
           const memories = postProcessMemories(leafMemories, { limit, scoreThreshold });
@@ -442,7 +436,7 @@ const memoryPlugin = {
                   const candidateLimit = Math.max(cfg.recallLimit * 4, 20);
                   api.logger.info?.(`openember-memory: autoRecall searching (userId=${userId ?? "null"}, query="${queryText.slice(0, 80)}", limit=${candidateLimit})`);
 
-                  const leafMemories = await multiScopeSearch(queryText, userId, hookAgentId, candidateLimit);
+                  const leafMemories = await searchMemories(queryText, userId, hookAgentId, candidateLimit);
 
                   api.logger.info?.(`openember-memory: autoRecall found ${leafMemories.length} leaf memories`);
 

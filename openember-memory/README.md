@@ -26,51 +26,46 @@ This means User A asking "remember that I prefer dark mode" would be recalled fo
 
 ### Isolation Model
 
-Each user gets their own memory space on the OpenViking server. The isolation is implemented via two mechanisms working together:
+Each user gets their own memory spaces on the OpenViking server. The isolation is implemented via two mechanisms working together:
 
-1. **`X-OpenViking-User` header**: Sent on every HTTP request to OpenViking. The value is `md5(userId + ":" + agentId)[:12]` -- a 12-character hex string derived from both the user ID and the agent ID.
+1. **`X-OpenViking-User` header**: Sent on every HTTP request. The value is the sanitized userId (colons replaced with underscores, e.g. `discord_123456`). The server uses this to derive two spaces:
+   - `user_space = userId` -- for user-private memories (profile, preferences, entities, events)
+   - `agent_space = md5(userId + agentId)[:12]` -- for agent-scoped memories (cases, patterns)
 
-2. **URI routing via `normalizeTargetUri()`**: The client rewrites `viking://user/memories` to `viking://user/{hash}/memories` before sending the request, where `{hash}` matches the `X-OpenViking-User` header value.
+2. **Client-computed target URIs**: The find API does not auto-route based on headers when `target_uri` is provided, so the client computes the correct URIs:
+   - `viking://user/{sanitizedUserId}/memories` -- user scope
+   - `viking://agent/{md5(userId+agentId)[:12]}/memories` -- agent scope
 
-This two-part approach ensures:
+This ensures:
 
-- **Different users on the same agent** have isolated memories (different userId produces different hash).
-- **Same user on different agents** has isolated memories (different agentId produces different hash).
-- **Agent shared memories** (when no userId is resolved) use `viking://agent/memories` with no `X-OpenViking-User` header, making them visible to all users.
+- **Different users on the same agent** have isolated memories in both scopes.
+- **Same user on different agents** shares user-scope memories (profile, preferences), but agent-scope memories (cases, patterns) are isolated per agent.
+- **Without userId** (anonymous): searches default spaces only.
 
 ### URI Routing
 
-**With a resolved userId:**
+**With a resolved userId (e.g. `discord_1112318905768231003`):**
 
 ```
 capture (auto-capture / memory_store):
-  client.setUserId("discord:123456")
-  → X-OpenViking-User: md5("discord:123456:ember")[:12]
-  → writes to viking://user/{hash}/memories/
+  X-OpenViking-User: discord_1112318905768231003
+  X-OpenViking-Agent: ember
+  → server writes profile/preferences/entities/events to viking://user/discord_1112318905768231003/memories/
+  → server writes cases/patterns to viking://agent/{md5("discord_1112318905768231003"+"ember")[:12]}/memories/
 
 recall (auto-recall / memory_recall):
-  Two parallel searches:
-    1. viking://user/memories → normalizeTargetUri → viking://user/{hash}/memories
-       (user's private memories, with X-OpenViking-User header)
-    2. viking://agent/memories
-       (agent shared memories, no X-OpenViking-User header)
+  Two parallel searches with client-computed URIs:
+    1. viking://user/discord_1112318905768231003/memories → user's private memories
+    2. viking://agent/{agentSpaceHash}/memories → user's agent-scoped cases/patterns
   Results are merged and deduplicated.
-```
-
-**Without a resolved userId (anonymous):**
-
-```
-capture/recall:
-  → viking://agent/memories only (shared across all users)
-  → No X-OpenViking-User header
 ```
 
 ### Multi-Scope Search
 
-When a userId is available, recall performs a parallel two-scope search (`multiScopeSearch`):
+When a userId is available, recall performs a parallel two-scope search (`searchMemories`):
 
-1. **User scope**: searches `viking://user/memories` with the user's `X-OpenViking-User` header set, so the server returns only that user's memories.
-2. **Agent scope**: searches `viking://agent/memories` without any user header, returning memories shared across all users of the agent.
+1. **User scope**: `viking://user/{sanitizedUserId}/memories` -- profile, preferences, entities, events.
+2. **Agent scope**: `viking://agent/{agentSpaceName(userId, agentId)}/memories` -- cases, patterns.
 
 Results from both scopes are merged, deduplicated by URI, and filtered to leaf-level memories (level 2) before ranking and injection.
 
@@ -136,10 +131,9 @@ The plugin uses two different resolution paths depending on the call site:
 **`client.ts`** -- Major changes:
 
 - Added `userId` private field and `setUserId()` method for per-request user identity.
-- Added `X-OpenViking-User` header injection in the `request()` method. The header value is `md5(userId + ":" + agentId)[:12]`.
-- Added `normalizeTargetUri()` as a synchronous method (upstream's is async with `ls()` calls). Rewrites `viking://user/{structure}` URIs to `viking://user/{hash}/{structure}` when a userId is set.
-- Removed `resolveScopeSpace()`, `getRuntimeIdentity()`, and `ls()` -- the upstream uses server-side directory listing to discover the user's space directory; this fork uses a deterministic hash instead, which is simpler and avoids extra round-trips.
-- Exported `md5Short()` utility function (upstream keeps it private).
+- Added `X-OpenViking-User` header injection in the `request()` method. The header value is the sanitized userId (colons replaced with underscores).
+- Added `sanitizeUserId()` and `agentSpaceName()` exports for client-side URI computation. `agentSpaceName` matches OpenViking v0.2.6 server logic: `md5(userId + agentId)[:12]` (no separator).
+- Removed `resolveScopeSpace()`, `getRuntimeIdentity()`, and `ls()` -- the upstream uses server-side directory listing to discover the user's space directory; this fork computes URIs client-side instead.
 
 **`index.ts`** -- Major changes:
 
