@@ -1,26 +1,21 @@
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { Type } from "@sinclair/typebox";
 import { memoryOpenVikingConfigSchema } from "./config.js";
 
 import { OpenVikingClient, localClientCache, localClientPendingPromises, isMemoryUri, sanitizeUserId, agentSpaceName } from "./client.js";
 import type { PendingClientEntry, FindResultItem } from "./client.js";
 import {
-  getCaptureDecision,
   isTranscriptLikeIngest,
-  extractNewTurnTexts,
   extractLatestUserText,
 } from "./text-utils.js";
 import {
   clampScore,
   postProcessMemories,
   formatMemoryLines,
-  trimForLog,
   toJsonLog,
   summarizeInjectionMemories,
-  summarizeExtractedMemories,
   pickMemoriesForInjection,
 } from "./memory-ranking.js";
 import {
@@ -32,6 +27,22 @@ import {
   prepareLocalPort,
 } from "./process-manager.js";
 import { resolveUserId, resolveUserIdFromMessages } from "./user-resolve.js";
+import { createOpenEmberContextEngine } from "./context-engine.js";
+
+// ─── Inline OpenClawPluginApi type (v0.2.9 compatible) ───
+// Avoids import from "openclaw/plugin-sdk" which may lag behind runtime capabilities.
+type OpenClawPluginApi = {
+  pluginConfig: unknown;
+  logger: {
+    info: (msg: string) => void;
+    warn: (msg: string) => void;
+    debug?: (msg: string) => void;
+  };
+  registerTool: (factory: (ctx: ToolContext) => unknown[], options: { names: string[] }) => void;
+  on: (event: string, handler: (event: any, ctx?: any) => Promise<unknown> | void) => void;
+  registerService: (service: { id: string; start: () => Promise<void>; stop: () => void }) => void;
+  registerContextEngine?: (pluginId: string, factory: () => unknown) => void;
+};
 
 type ToolContext = {
   agentId?: string;
@@ -42,12 +53,13 @@ type ToolContext = {
 const MAX_OPENVIKING_STDERR_LINES = 200;
 const MAX_OPENVIKING_STDERR_CHARS = 256_000;
 const AUTO_RECALL_TIMEOUT_MS = 5_000;
+const CLIENT_INIT_TIMEOUT_MS = 5_000;
 
 const memoryPlugin = {
   id: "openember-memory",
   name: "Memory (OpenEmber)",
   description: "OpenViking-backed long-term memory with auto-recall/capture and multi-user isolation",
-  kind: "memory" as const,
+  kind: "context-engine" as const,
   configSchema: memoryOpenVikingConfigSchema,
 
   register(api: OpenClawPluginApi) {
@@ -59,6 +71,24 @@ const memoryPlugin = {
     let resolveLocalClient: ((c: OpenVikingClient) => void) | null = null;
     let rejectLocalClient: ((err: unknown) => void) | null = null;
     let localUnavailableReason: string | null = null;
+
+    // ─── Multi-agent session tracking ───
+    const sessionAgentIds = new Map<string, string>();
+
+    const rememberSessionAgentId = (ctx?: { sessionKey?: string; agentId?: string }) => {
+      const key = ctx?.sessionKey;
+      const aid = ctx?.agentId;
+      if (key && aid) {
+        sessionAgentIds.set(key, aid);
+      }
+    };
+
+    const resolveSessionAgentId = (sessionId?: string): string => {
+      if (sessionId && sessionAgentIds.has(sessionId)) {
+        return sessionAgentIds.get(sessionId)!;
+      }
+      return cfg.agentId;
+    };
 
     const markLocalUnavailable = (reason: string, err?: unknown) => {
       if (!localUnavailableReason) {
@@ -99,7 +129,8 @@ const memoryPlugin = {
       clientPromise = Promise.resolve(new OpenVikingClient(cfg.baseUrl, cfg.apiKey, cfg.agentId, cfg.timeoutMs));
     }
 
-    const getClient = (): Promise<OpenVikingClient> => clientPromise;
+    const getClient = (): Promise<OpenVikingClient> =>
+      withTimeout(clientPromise, CLIENT_INIT_TIMEOUT_MS, "openember-memory: client init timed out");
 
     /** Create a fresh client with the given userId + agentId pre-configured. */
     const createConfiguredClient = (userId: string | null, agentId: string): OpenVikingClient => {
@@ -113,7 +144,7 @@ const memoryPlugin = {
      *
      * With userId:
      *   1. viking://user/{sanitizedUserId}/memories — profile, preferences, entities, events
-     *   2. viking://agent/{md5(userId+agentId)[:12]}/memories — cases, patterns
+     *   2. viking://agent/{md5(userId+":"+agentId)[:12]}/memories — cases, patterns
      *
      * Without userId: searches default spaces only.
      */
@@ -405,15 +436,47 @@ const memoryPlugin = {
       names: ["memory_recall", "memory_store", "memory_forget"],
     });
 
-    // ─── Auto-Recall (before_agent_start hook) ───
+    // ─── Hook: session_start / session_end — track agentId per session ───
+    api.on("session_start", async (_event, ctx) => {
+      rememberSessionAgentId(ctx);
+    });
+
+    api.on("session_end", async (_event, ctx) => {
+      rememberSessionAgentId(ctx);
+    });
+
+    // ─── Hook: before_reset / after_compaction — reserved ───
+    api.on("before_reset", async () => {
+      // reserved for future use
+    });
+
+    api.on("after_compaction", async () => {
+      // reserved for future use
+    });
+
+    // ─── Auto-Recall (before_prompt_build hook, renamed from before_agent_start) ───
     if (cfg.autoRecall || cfg.ingestReplyAssist) {
-      api.on("before_agent_start", async (event, ctx) => {
+      api.on("before_prompt_build", async (event, ctx) => {
         const hookAgentId = ctx?.agentId ?? cfg.agentId;
         const userId = resolveUserId(ctx?.sessionKey, event.prompt);
 
-        api.logger.info?.(`openember-memory: before_agent_start userId=${userId ?? "null"} agentId=${hookAgentId}`);
+        // Track agentId for this session
+        rememberSessionAgentId(ctx);
 
-        const queryText = extractLatestUserText(event.messages) || event.prompt.trim();
+        // Switch shared client's agentId if a session-specific one is active
+        try {
+          const client = await getClient();
+          const resolvedId = resolveSessionAgentId(ctx?.sessionKey);
+          if (client.getAgentId() !== resolvedId) {
+            client.setAgentId(resolvedId);
+          }
+        } catch {
+          // client not ready yet — will be set on next hook
+        }
+
+        api.logger.info?.(`openember-memory: before_prompt_build userId=${userId ?? "null"} agentId=${hookAgentId}`);
+
+        const queryText = extractLatestUserText(event.messages) || event.prompt?.trim?.() || "";
         if (!queryText) {
           return;
         }
@@ -513,80 +576,29 @@ const memoryPlugin = {
       });
     }
 
-    // ─── Auto-Capture (agent_end hook) ───
-    if (cfg.autoCapture) {
-      let lastProcessedMsgCount = 0;
+    // ─── agent_end hook — track agentId only (auto-capture moved to ContextEngine.afterTurn) ───
+    api.on("agent_end", async (_event, ctx) => {
+      rememberSessionAgentId(ctx);
+    });
 
-      api.on("agent_end", async (event, ctx) => {
-        const hookAgentId = ctx?.agentId ?? cfg.agentId;
-        // Resolve userId: sessionKey → raw message metadata (unsanitized)
-        const userId = resolveUserIdFromMessages(ctx?.sessionKey, event.messages);
-
-        api.logger.info?.(`openember-memory: agent_end userId=${userId ?? "null"} agentId=${hookAgentId}`);
-
-        if (!event.success || !event.messages || event.messages.length === 0) {
-          api.logger.info(
-            `openember-memory: auto-capture skipped (success=${String(event.success)}, messages=${event.messages?.length ?? 0})`,
-          );
-          return;
-        }
-        try {
-          const messages = event.messages;
-          // On first run after restart, only capture the last few messages (not entire history)
-          const effectiveStart = lastProcessedMsgCount === 0 && messages.length > 4
-            ? messages.length - 4
-            : lastProcessedMsgCount;
-          const { texts: newTexts, newCount } = extractNewTurnTexts(messages, effectiveStart);
-          lastProcessedMsgCount = messages.length;
-
-          if (newTexts.length === 0) {
-            api.logger.info("openember-memory: auto-capture skipped (no new user/assistant messages)");
-            return;
-          }
-
-          const turnText = newTexts.join("\n");
-
-          const decision = getCaptureDecision(turnText, cfg.captureMode, cfg.captureMaxLength);
-          const preview = turnText.length > 80 ? `${turnText.slice(0, 80)}...` : turnText;
-          api.logger.info(
-            `openember-memory: capture-check shouldCapture=${String(decision.shouldCapture)} reason=${decision.reason} userId=${userId ?? "null"} newMsgCount=${newCount} text="${preview}"`,
-          );
-          if (!decision.shouldCapture) {
-            api.logger.info("openember-memory: auto-capture skipped (capture decision rejected)");
-            return;
-          }
-
-          // Capture to user-specific namespace when userId is available
-          const captureClient = createConfiguredClient(userId, hookAgentId);
-          const sessionId = await captureClient.createSession();
-          try {
-            await captureClient.addSessionMessage(sessionId, "user", decision.normalizedText);
-            await captureClient.getSession(sessionId).catch(() => ({}));
-            const extracted = await captureClient.extractSessionMemories(sessionId);
-            api.logger.info(
-              `openember-memory: auto-captured ${newCount} new messages, extracted ${extracted.length} memories (userId=${userId ?? "null"})`,
-            );
-            api.logger.info(
-              `openember-memory: capture-detail ${toJsonLog({
-                capturedCount: newCount,
-                userId,
-                captured: [trimForLog(turnText, 260)],
-                extractedCount: extracted.length,
-                extracted: summarizeExtractedMemories(extracted),
-              })}`,
-            );
-            if (extracted.length === 0) {
-              api.logger.warn(
-                "openember-memory: auto-capture completed but extract returned 0 memories. Check OpenViking server logs.",
-              );
-            }
-          } finally {
-            await captureClient.deleteSession(sessionId).catch(() => {});
-          }
-        } catch (err) {
-          api.logger.warn(`openember-memory: auto-capture failed: ${String(err)}`);
-        }
-      });
+    // ─── Register ContextEngine ───
+    if (api.registerContextEngine) {
+      api.registerContextEngine(memoryPlugin.id, () =>
+        createOpenEmberContextEngine({
+          cfg,
+          logger: api.logger,
+          getClient,
+          resolveAgentId: resolveSessionAgentId,
+          createConfiguredClient,
+          resolveUserIdFromMessages,
+        }),
+      );
+      api.logger.info?.("openember-memory: registered context-engine");
+    } else {
+      api.logger.warn(
+        "openember-memory: api.registerContextEngine not available — context-engine features disabled. " +
+        "Ensure OpenClaw v0.2.9+ is installed.",
+      );
     }
 
     // ─── Service lifecycle ───

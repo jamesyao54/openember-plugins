@@ -51,11 +51,11 @@ export function sanitizeUserId(userId: string): string {
 }
 
 /**
- * Compute the agent space name matching OpenViking v0.2.6 server logic:
- *   agent_space = md5(user_id + agent_id)[:12]    (no separator)
+ * Compute the agent space name matching OpenViking v0.2.8 server logic:
+ *   agent_space = md5(user_id + ":" + agent_id)[:12]
  */
 export function agentSpaceName(userId: string, agentId: string): string {
-  return createHash("md5").update(sanitizeUserId(userId) + agentId).digest("hex").slice(0, 12);
+  return createHash("md5").update(sanitizeUserId(userId) + ":" + agentId).digest("hex").slice(0, 12);
 }
 
 export function isMemoryUri(uri: string): boolean {
@@ -93,6 +93,13 @@ export class OpenVikingClient {
     }
   }
 
+  /**
+   * Return the current agent ID.
+   */
+  getAgentId(): string {
+    return this.agentId;
+  }
+
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -104,12 +111,9 @@ export class OpenVikingClient {
       if (this.agentId) {
         headers.set("X-OpenViking-Agent", this.agentId);
       }
-      if (this.userId) {
-        // Pass userId directly. Server derives:
-        //   user_space = userId (for viking://user/ routing)
-        //   agent_space = md5(userId:agentId) (for viking://agent/ routing)
-        headers.set("X-OpenViking-User", sanitizeUserId(this.userId));
-      }
+      // v0.2.8: ROOT key requests to data APIs require both Account and User headers.
+      headers.set("X-OpenViking-Account", "default");
+      headers.set("X-OpenViking-User", this.userId ? sanitizeUserId(this.userId) : "default");
       if (init.body && !headers.has("Content-Type")) {
         headers.set("Content-Type", "application/json");
       }

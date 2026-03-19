@@ -1,5 +1,11 @@
 import type { CaptureMode } from "./client.js";
 
+/**
+ * Maximum total characters sent to a single capture session.
+ * Prevents excessively long conversation turns from overwhelming the extraction pipeline.
+ */
+export const CAPTURE_LIMIT = 24_000;
+
 export const MEMORY_TRIGGERS = [
   /remember|preference|prefer|important|decision|decided|always|never/i,
   /记住|偏好|喜欢|喜爱|崇拜|讨厌|害怕|重要|决定|总是|永远|优先|习惯|爱好|擅长|最爱|不喜欢/i,
@@ -329,4 +335,38 @@ export function extractLatestUserText(messages: unknown[] | undefined): string {
     }
   }
   return "";
+}
+
+/**
+ * Normalize text for deduplication during capture.
+ * Strips whitespace and lowercases so near-identical messages are not captured twice.
+ */
+export function normalizeCaptureDedupeText(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Pick the most recent unique texts from an array, up to `limit` characters total.
+ * Used by afterTurn() to select which new messages to send to OpenViking capture,
+ * avoiding duplicate content across consecutive turns.
+ */
+export function pickRecentUniqueTexts(
+  texts: string[],
+  limit: number,
+): string[] {
+  const seen = new Set<string>();
+  const picked: string[] = [];
+  let totalChars = 0;
+  // Walk backwards (most recent first) to prioritise the latest turn.
+  for (let i = texts.length - 1; i >= 0; i--) {
+    const text = texts[i];
+    if (!text) continue;
+    const key = normalizeCaptureDedupeText(text);
+    if (!key || seen.has(key)) continue;
+    if (totalChars + text.length > limit) break;
+    seen.add(key);
+    picked.unshift(text); // maintain original order
+    totalChars += text.length;
+  }
+  return picked;
 }
