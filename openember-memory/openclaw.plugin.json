@@ -1,6 +1,6 @@
 {
   "id": "openember-memory",
-  "kind": "memory",
+  "kind": "context-engine",
   "uiHints": {
     "mode": {
       "label": "Mode",
