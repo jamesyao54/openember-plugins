@@ -28,6 +28,7 @@ import {
 } from "./process-manager.js";
 import { resolveUserId, resolveUserIdFromMessages } from "./user-resolve.js";
 import { createOpenEmberContextEngine } from "./context-engine.js";
+import { ProfileStore, registerUserProfiles, resolveCanonicalUserId } from "./user-profiles/index.js";
 
 // ─── Inline OpenClawPluginApi type (v0.2.9 compatible) ───
 // Avoids import from "openclaw/plugin-sdk" which may lag behind runtime capabilities.
@@ -42,6 +43,12 @@ type OpenClawPluginApi = {
   on: (event: string, handler: (event: any, ctx?: any) => Promise<unknown> | void) => void;
   registerService: (service: { id: string; start: () => Promise<void>; stop: () => void }) => void;
   registerContextEngine?: (pluginId: string, factory: () => unknown) => void;
+  registerCommand?: (cmd: {
+    name: string;
+    description: string;
+    handler: (ctx: any) => unknown | Promise<unknown>;
+    acceptsArgs?: boolean;
+  }) => void;
 };
 
 type ToolContext = {
@@ -65,6 +72,13 @@ const memoryPlugin = {
   register(api: OpenClawPluginApi) {
     const cfg = memoryOpenVikingConfigSchema.parse(api.pluginConfig);
     const localCacheKey = `${cfg.mode}:${cfg.baseUrl}:${cfg.configPath}:${cfg.apiKey}`;
+
+    // ─── User Profiles (optional) ───
+    let profileStore: ProfileStore | null = null;
+    if (cfg.userProfiles.enabled) {
+      profileStore = new ProfileStore(cfg.userProfiles.dataDir, api.logger);
+      api.logger.info?.(`openember-memory: user profiles enabled (dataDir=${cfg.userProfiles.dataDir})`);
+    }
 
     let clientPromise: Promise<OpenVikingClient>;
     let localProcess: ReturnType<typeof spawn> | null = null;
@@ -189,7 +203,9 @@ const memoryPlugin = {
     // ─── Tools (registered as factory for per-request user context) ───
 
     const toolFactory = (ctx: ToolContext) => {
-      const userId = ctx.requesterSenderId ?? resolveUserId(ctx.sessionKey);
+      const userId = profileStore
+        ? resolveCanonicalUserId(profileStore, ctx.sessionKey, undefined, undefined, ctx.requesterSenderId)
+        : (ctx.requesterSenderId ?? resolveUserId(ctx.sessionKey));
       const agentId = ctx.agentId ?? cfg.agentId;
 
       const memoryRecallTool = {
@@ -436,6 +452,17 @@ const memoryPlugin = {
       names: ["memory_recall", "memory_store", "memory_forget"],
     });
 
+    // ─── User Profiles: register commands, tools, hooks ───
+    if (profileStore && cfg.userProfiles.enabled) {
+      registerUserProfiles(
+        api,
+        cfg.userProfiles,
+        profileStore,
+        cfg.agentId,
+        createConfiguredClient,
+      );
+    }
+
     // ─── Hook: session_start / session_end — track agentId per session ───
     api.on("session_start", async (_event, ctx) => {
       rememberSessionAgentId(ctx);
@@ -458,7 +485,9 @@ const memoryPlugin = {
     if (cfg.autoRecall || cfg.ingestReplyAssist) {
       api.on("before_prompt_build", async (event, ctx) => {
         const hookAgentId = ctx?.agentId ?? cfg.agentId;
-        const userId = resolveUserId(ctx?.sessionKey, event.prompt);
+        const userId = profileStore
+          ? resolveCanonicalUserId(profileStore, ctx?.sessionKey, event.prompt)
+          : resolveUserId(ctx?.sessionKey, event.prompt);
 
         // Track agentId for this session
         rememberSessionAgentId(ctx);
@@ -591,6 +620,7 @@ const memoryPlugin = {
           resolveAgentId: resolveSessionAgentId,
           createConfiguredClient,
           resolveUserIdFromMessages,
+          profileStore,
         }),
       );
       api.logger.info?.("openember-memory: registered context-engine");

@@ -4,6 +4,14 @@ import { resolve as resolvePath } from "node:path";
 
 export const DEFAULT_MEMORY_OPENVIKING_DATA_DIR = join(homedir(), ".openviking");
 
+export type UserProfilesParsedConfig = {
+  enabled: boolean;
+  dataDir: string;
+  tokenTtlMs: number;
+  autoCreateProfile: boolean;
+  injectProfile: boolean;
+};
+
 export type MemoryOpenVikingConfig = {
   /** "local" = plugin starts OpenViking server as child process (like Claude Code); "remote" = use existing HTTP server */
   mode?: "local" | "remote";
@@ -25,6 +33,7 @@ export type MemoryOpenVikingConfig = {
   ingestReplyAssist?: boolean;
   ingestReplyAssistMinSpeakerTurns?: number;
   ingestReplyAssistMinChars?: number;
+  userProfiles?: UserProfilesParsedConfig;
 };
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:1933";
@@ -40,6 +49,7 @@ const DEFAULT_INGEST_REPLY_ASSIST_MIN_SPEAKER_TURNS = 2;
 const DEFAULT_INGEST_REPLY_ASSIST_MIN_CHARS = 120;
 const DEFAULT_LOCAL_CONFIG_PATH = join(homedir(), ".openviking", "ov.conf");
 
+const DEFAULT_TOKEN_TTL_MS = 600_000; // 10 minutes
 const DEFAULT_AGENT_ID = "default";
 
 function resolveAgentId(configured: unknown): string {
@@ -88,6 +98,32 @@ function resolveDefaultBaseUrl(): string {
   return DEFAULT_BASE_URL;
 }
 
+function parseUserProfilesConfig(raw: unknown): UserProfilesParsedConfig {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {
+      enabled: false,
+      dataDir: "./users",
+      tokenTtlMs: DEFAULT_TOKEN_TTL_MS,
+      autoCreateProfile: true,
+      injectProfile: true,
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+  // Keep dataDir as-is (don't resolve against cwd at parse time).
+  // ProfileStore constructor calls mkdirSync(dataDir, {recursive: true}) which handles relative paths.
+  // Callers should provide absolute paths or paths relative to the project root.
+  const dataDir = typeof obj.dataDir === "string" && obj.dataDir.trim()
+    ? resolveEnvVars(obj.dataDir.trim()).replace(/^~/, homedir())
+    : join(homedir(), ".openember", "users");
+  return {
+    enabled: obj.enabled === true,
+    dataDir,
+    tokenTtlMs: Math.max(30_000, Math.floor(toNumber(obj.tokenTtlMs, DEFAULT_TOKEN_TTL_MS))),
+    autoCreateProfile: obj.autoCreateProfile !== false,
+    injectProfile: obj.injectProfile !== false,
+  };
+}
+
 export const memoryOpenVikingConfigSchema = {
   parse(value: unknown): Required<MemoryOpenVikingConfig> {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -114,6 +150,7 @@ export const memoryOpenVikingConfigSchema = {
         "ingestReplyAssist",
         "ingestReplyAssistMinSpeakerTurns",
         "ingestReplyAssistMinChars",
+        "userProfiles",
       ],
       "memory-openviking config",
     );
@@ -185,6 +222,7 @@ export const memoryOpenVikingConfigSchema = {
           Math.floor(toNumber(cfg.ingestReplyAssistMinChars, DEFAULT_INGEST_REPLY_ASSIST_MIN_CHARS)),
         ),
       ),
+      userProfiles: parseUserProfilesConfig(cfg.userProfiles),
     };
   },
   uiHints: {
@@ -274,6 +312,32 @@ export const memoryOpenVikingConfigSchema = {
       label: "Ingest Min Chars",
       placeholder: String(DEFAULT_INGEST_REPLY_ASSIST_MIN_CHARS),
       help: "Minimum sanitized text length required before ingest reply assist can trigger.",
+      advanced: true,
+    },
+    "userProfiles.enabled": {
+      label: "User Profiles",
+      help: "Enable cross-channel identity unification and user profiles.",
+    },
+    "userProfiles.dataDir": {
+      label: "Profiles Data Dir",
+      placeholder: "./users",
+      help: "Directory for identity-map.json and profiles.json.",
+      advanced: true,
+    },
+    "userProfiles.tokenTtlMs": {
+      label: "Bind Token TTL (ms)",
+      placeholder: String(DEFAULT_TOKEN_TTL_MS),
+      help: "How long a /bind token stays valid.",
+      advanced: true,
+    },
+    "userProfiles.autoCreateProfile": {
+      label: "Auto-Create Profile",
+      help: "Automatically create a profile for unknown users on first message.",
+      advanced: true,
+    },
+    "userProfiles.injectProfile": {
+      label: "Inject Profile",
+      help: "Inject <user-profile> block into agent system context.",
       advanced: true,
     },
   },

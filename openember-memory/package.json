@@ -10,7 +10,10 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "node --test test/*.test.mjs",
+    "test:unit": "node --test test/unit.test.mjs test/store.test.mjs test/identity-resolve.test.mjs test/bind-flow.test.mjs test/config.test.mjs",
+    "test:integration": "node --test test/integration.test.mjs"
   },
   "dependencies": {
     "@sinclair/typebox": "0.34.48"
