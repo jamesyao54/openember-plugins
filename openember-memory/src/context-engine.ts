@@ -8,6 +8,8 @@
 
 import type { OpenVikingClient, FindResultItem } from "./client.js";
 import type { MemoryOpenVikingConfig } from "./config.js";
+import type { ProfileStore } from "./user-profiles/store.js";
+import { resolveCanonicalUserId } from "./user-profiles/identity-resolve.js";
 import {
   getCaptureDecision,
   extractNewTurnTexts,
@@ -61,6 +63,7 @@ export type CreateContextEngineOptions = {
   resolveAgentId: (sessionId?: string) => string;
   createConfiguredClient: (userId: string | null, agentId: string) => OpenVikingClient;
   resolveUserIdFromMessages: (sessionKey?: string, messages?: unknown[]) => string | null;
+  profileStore?: ProfileStore | null;
 };
 
 /**
@@ -69,7 +72,7 @@ export type CreateContextEngineOptions = {
 export function createOpenEmberContextEngine(
   options: CreateContextEngineOptions,
 ): ContextEngineInstance {
-  const { cfg, logger, getClient, resolveAgentId, createConfiguredClient, resolveUserIdFromMessages } = options;
+  const { cfg, logger, getClient, resolveAgentId, createConfiguredClient, resolveUserIdFromMessages, profileStore } = options;
 
   return {
     /** No-op — OpenViking handles ingestion via sessions. */
@@ -113,7 +116,11 @@ export function createOpenEmberContextEngine(
           : cfg.agentId;
 
         // Resolve userId from raw messages (unsanitized text has Sender metadata)
-        const userId = resolveUserIdFromMessages(params.sessionId, messages);
+        // When profileStore is available, resolve through canonical IDs
+        const rawUserId = resolveUserIdFromMessages(params.sessionId, messages);
+        const userId = profileStore && rawUserId
+          ? (resolveCanonicalUserId(profileStore, params.sessionId) ?? rawUserId)
+          : rawUserId;
 
         logger.info?.(
           `openember-memory: afterTurn userId=${userId ?? "null"} agentId=${hookAgentId} msgCount=${messages.length} prePrompt=${prePromptMessageCount}`,

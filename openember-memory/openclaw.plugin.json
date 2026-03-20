@@ -89,6 +89,32 @@
       "placeholder": "120",
       "help": "Minimum sanitized text length required before ingest reply assist can trigger.",
       "advanced": true
+    },
+    "userProfiles.enabled": {
+      "label": "User Profiles",
+      "help": "Enable cross-channel identity unification and user profiles."
+    },
+    "userProfiles.dataDir": {
+      "label": "Profiles Data Dir",
+      "placeholder": "./users",
+      "help": "Directory for identity-map.json and profiles.json.",
+      "advanced": true
+    },
+    "userProfiles.tokenTtlMs": {
+      "label": "Bind Token TTL (ms)",
+      "placeholder": "600000",
+      "help": "How long a /bind token stays valid.",
+      "advanced": true
+    },
+    "userProfiles.autoCreateProfile": {
+      "label": "Auto-Create Profile",
+      "help": "Automatically create a profile for unknown users on first message.",
+      "advanced": true
+    },
+    "userProfiles.injectProfile": {
+      "label": "Inject Profile",
+      "help": "Inject user-profile block into agent system context.",
+      "advanced": true
     }
   },
   "configSchema": {
@@ -145,6 +171,16 @@
       },
       "ingestReplyAssistMinChars": {
         "type": "number"
+      },
+      "userProfiles": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "dataDir": { "type": "string" },
+          "tokenTtlMs": { "type": "number" },
+          "autoCreateProfile": { "type": "boolean" },
+          "injectProfile": { "type": "boolean" }
+        }
       }
     }
   }
