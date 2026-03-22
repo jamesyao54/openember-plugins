@@ -1,0 +1,83 @@
+{
+  "id": "openclaw-sms-pairing",
+  "kind": "plugin",
+  "uiHints": {
+    "sms.accessKeyId": {
+      "label": "Aliyun Access Key ID",
+      "sensitive": true,
+      "placeholder": "${ALIYUN_ACCESS_KEY_ID}"
+    },
+    "sms.accessKeySecret": {
+      "label": "Aliyun Access Key Secret",
+      "sensitive": true,
+      "placeholder": "${ALIYUN_ACCESS_KEY_SECRET}"
+    },
+    "sms.signName": {
+      "label": "SMS Sign Name",
+      "help": "Alibaba Cloud SMS signature name"
+    },
+    "sms.templateCode": {
+      "label": "SMS Template Code",
+      "help": "Alibaba Cloud SMS template code"
+    },
+    "sms.endpoint": {
+      "label": "SMS API Endpoint",
+      "placeholder": "dysmsapi.aliyuncs.com",
+      "advanced": true
+    },
+    "profiles.dataDir": {
+      "label": "User Profiles Directory",
+      "placeholder": "${OPENCLAW_IDENTITY_DIR}/users",
+      "help": "Directory for shared profiles.json and identity-map.json"
+    },
+    "rateLimit.resendIntervalSeconds": {
+      "label": "Resend Cooldown (seconds)",
+      "placeholder": "60",
+      "advanced": true
+    },
+    "rateLimit.maxAttemptsPerHour": {
+      "label": "Max SMS per Phone per Hour",
+      "placeholder": "5",
+      "advanced": true
+    },
+    "rateLimit.maxDailyTotal": {
+      "label": "Global Daily SMS Cap",
+      "placeholder": "200",
+      "advanced": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "sms": {
+        "type": "object",
+        "properties": {
+          "provider": { "type": "string" },
+          "endpoint": { "type": "string" },
+          "accessKeyId": { "type": "string" },
+          "accessKeySecret": { "type": "string" },
+          "signName": { "type": "string" },
+          "templateCode": { "type": "string" },
+          "templateParamKey": { "type": "string" }
+        }
+      },
+      "profiles": {
+        "type": "object",
+        "properties": {
+          "dataDir": { "type": "string" }
+        }
+      },
+      "rateLimit": {
+        "type": "object",
+        "properties": {
+          "resendIntervalSeconds": { "type": "number" },
+          "maxAttemptsPerHour": { "type": "number" },
+          "maxDailyTotal": { "type": "number" }
+        }
+      },
+      "expiryMs": { "type": "number" },
+      "maxCodeAttempts": { "type": "number" }
+    }
+  }
+}
